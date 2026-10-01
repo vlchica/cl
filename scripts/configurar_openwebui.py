@@ -12,6 +12,17 @@ import sys
 
 from comum import atualizar_env, esperar, http, ler_env, log
 
+PROMPT_SISTEMA = (
+    "Você é um assistente pessoal que roda localmente no computador do usuário. Responda sempre em português do "
+    "Brasil, de forma clara e direta. Use as ferramentas quando precisar: pesquisa na web para fatos atuais, geração "
+    "de imagens (descreva a imagem em inglês para o gerador) e criar_documento para entregar arquivos PDF, Word, TXT "
+    "ou Markdown; depois de criar um arquivo, mostre o link de download."
+)
+NOMES_MODELOS = {
+    "qwen3-omni": "Qwen3-Omni 30B-A3B (4 bits, llama.cpp)",
+    "hf.co/ggml-org/Qwen3-Omni-30B-A3B-Instruct-GGUF:Q4_K_M": "Qwen3-Omni 30B-A3B (4 bits)",
+}
+
 
 def _base(env: dict) -> str:
     return f"http://localhost:{env.get('PORTA_WEBUI', '3000')}"
@@ -61,6 +72,35 @@ def _ajustar(base: str, token: str, get: str, post: str, desejado: dict, envelop
         if status != 200:
             return [f"falha ao gravar {post} ({status}): {str(r)[:300]}"]
     return mudancas
+
+
+def _configurar_modelo(base: str, token: str, modelo: str, imagens: bool) -> str:
+    cab = {"Authorization": f"Bearer {token}"}
+    recursos = ["web_search"] + (["image_generation"] if imagens else [])
+    desejado = {
+        "id": modelo,
+        "base_model_id": None,
+        "name": NOMES_MODELOS.get(modelo, modelo),
+        "meta": {
+            "description": "Assistente local em português (voz, busca, imagens e documentos)",
+            "toolIds": ["server:ferramentas"],
+            "defaultFeatureIds": recursos,
+            "capabilities": {"vision": False, "file_upload": True, "file_context": True, "web_search": True,
+                             "image_generation": imagens, "code_interpreter": False, "citations": True,
+                             "status_updates": True, "memory": True, "builtin_tools": True},
+        },
+        "params": {"system": PROMPT_SISTEMA, "function_calling": "native", "temperature": 0.6},
+        "is_active": True,
+    }
+    status, atual = http("GET", f"{base}/api/v1/models/model?id={modelo}", cabecalhos=cab)
+    if status == 200 and isinstance(atual, dict) and atual.get("id") == modelo:
+        if atual.get("params", {}).get("system") == PROMPT_SISTEMA and (atual.get("meta") or {}).get("toolIds") == ["server:ferramentas"] \
+                and (atual.get("meta") or {}).get("defaultFeatureIds") == recursos:
+            return ""
+        status, r = http("POST", f"{base}/api/v1/models/model/update", desejado, cabecalhos=cab)
+        return f"{modelo}: configuração atualizada" if status == 200 else f"{modelo}: falha ao atualizar ({status}) {str(r)[:200]}"
+    status, r = http("POST", f"{base}/api/v1/models/create", desejado, cabecalhos=cab)
+    return f"{modelo}: prompt em português e ferramentas configurados" if status == 200 else f"{modelo}: falha ao criar ({status}) {str(r)[:200]}"
 
 
 def configurar(env: dict | None = None) -> dict:
@@ -118,9 +158,22 @@ def configurar(env: dict | None = None) -> dict:
     lista = (atual or {}).get("TOOL_SERVER_CONNECTIONS", []) if isinstance(atual, dict) else []
     outras = [c for c in lista if (c.get("info") or {}).get("id") != "ferramentas"]
     nossa = next((c for c in lista if (c.get("info") or {}).get("id") == "ferramentas"), None)
-    if nossa != conexao:
+
+    def essencial(c: dict | None) -> tuple:
+        c = c or {}
+        cfg = c.get("config") or {}
+        return (c.get("url"), c.get("path"), c.get("key"), cfg.get("enable"), cfg.get("function_name_filter_list"))
+
+    if essencial(nossa) != essencial(conexao):
         status, r = http("POST", f"{base}/api/v1/configs/tool_servers", {"TOOL_SERVER_CONNECTIONS": outras + [conexao]}, cabecalhos=cab)
         ajustes["ferramentas"] = ["conexão do servidor de ferramentas atualizada" if status == 200 else f"falha ({status}): {str(r)[:200]}"]
+
+    # Configuração por modelo: o Open WebUI só aplica o prompt de sistema e a chamada nativa de
+    # ferramentas quando o modelo tem um registro próprio (Workspace › Modelos).
+    for modelo in dict.fromkeys(m for m in (env.get("LLM_MODELO_ATIVO"), env.get("LLM_RESERVA")) if m):
+        mudanca = _configurar_modelo(base, token, modelo, imagens)
+        if mudanca:
+            ajustes.setdefault("modelos", []).append(mudanca)
 
     # O modelo ativo aparece na lista do Open WebUI?
     status, modelos = http("GET", f"{base}/api/models", cabecalhos={"Authorization": f"Bearer {chave}"}, timeout=60)
