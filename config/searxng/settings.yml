@@ -1,0 +1,30 @@
+# SearXNG local usado pelo Open WebUI e pelo modo de voz para pesquisar na web.
+# A chave secreta vem da variável SEARXNG_SECRET (definida no .env).
+use_default_settings: true
+
+general:
+  instance_name: "Busca do assistente"
+  enable_metrics: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "pt-BR"
+  # O formato json é o que o Open WebUI e o serviço de ferramentas usam
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "definida-por-SEARXNG_SECRET"
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+
+ui:
+  default_locale: "pt-BR"
+
+outgoing:
+  request_timeout: 5.0
+  max_request_timeout: 10.0

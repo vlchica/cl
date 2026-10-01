@@ -1,0 +1,12 @@
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32
+faster-whisper==1.2.1
+ctranslate2==4.8.2
+kokoro==0.9.4
+misaki[en]==0.9.4
+piper-tts==1.8.0
+soundfile==0.14.0
+num2words==0.5.14
+nvidia-ml-py==13.615.71
+transformers==4.57.6

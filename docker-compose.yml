@@ -1,0 +1,288 @@
+# Assistente de voz local em português — todos os serviços.
+# Os valores vêm do .env gerado por scripts/detectar_hardware.py.
+# Em máquinas com GPU NVIDIA o .env também carrega docker-compose.gpu.yml.
+
+name: assistente
+
+x-padrao: &padrao
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  # ------------------------------------------------------------------ LLM
+  ollama:
+    <<: *padrao
+    image: ollama/ollama:0.35.0
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_KEEP_ALIVE: 24h            # mantém o modelo carregado: resposta rápida por voz
+      OLLAMA_CONTEXT_LENGTH: ${LLM_CONTEXTO:-8192}
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_KV_CACHE_TYPE: q8_0        # metade da VRAM do contexto, sem perda perceptível
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"     # principal e reserva nunca disputam a VRAM ao mesmo tempo
+      OLLAMA_NO_CLOUD: "1"
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+    volumes:
+      - ollama:/root/.ollama
+    ports:
+      - "127.0.0.1:${PORTA_OLLAMA:-11434}:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+
+  # Alternativa equivalente: só sobe (perfil "llamacpp") se o Ollama não carregar o Qwen3-Omni.
+  # Usa o mesmo arquivo GGUF de 4 bits que o Ollama baixou, sem baixar de novo.
+  llamacpp:
+    <<: *padrao
+    image: ghcr.io/ggml-org/llama.cpp:server-b11277
+    profiles: ["llamacpp"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ -n "$$LLAMACPP_ARQUIVO" ] && [ -f "$$LLAMACPP_ARQUIVO" ]; then FONTE="-m $$LLAMACPP_ARQUIVO"; else FONTE="-hf $$LLAMACPP_REPO --no-mmproj"; fi
+        exec /app/llama-server $$FONTE --host 0.0.0.0 --port 8080 --alias qwen3-omni \
+          -c $${LLM_CONTEXTO:-8192} -ctk q8_0 -ctv q8_0 -fa auto -np 1 --jinja --no-webui
+    environment:
+      LLAMACPP_ARQUIVO: ${LLAMACPP_ARQUIVO:-}
+      LLAMACPP_REPO: ${LLAMACPP_REPO:-ggml-org/Qwen3-Omni-30B-A3B-Instruct-GGUF:Q4_K_M}
+      LLM_CONTEXTO: ${LLM_CONTEXTO:-8192}
+      LLAMA_CACHE: /modelos
+      LLAMA_ARG_FIT_TARGET: ${LLAMACPP_FOLGA_VRAM_MB:-1024}
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+    volumes:
+      - llamacpp:/modelos
+      - ollama:/root/.ollama:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 1800s
+
+  # ------------------------------------------------------------------ voz (Whisper + Kokoro/Piper)
+  fala:
+    <<: *padrao
+    build:
+      context: ./servicos/fala
+      args:
+        IMAGEM_BASE: assistente/base:${TORCH_INDICE:-cpu}
+    image: assistente/fala:local
+    environment:
+      WHISPER_MODELO: ${WHISPER_MODELO:-large-v3-turbo}
+      WHISPER_DISPOSITIVO: ${WHISPER_DISPOSITIVO:-cpu}
+      WHISPER_COMPUTE: ${WHISPER_COMPUTE:-int8}
+      WHISPER_IDIOMA: pt
+      TTS_DISPOSITIVO: ${TTS_DISPOSITIVO:-cpu}
+      TTS_VOZ: ${TTS_VOZ:-pf_dora}
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+    volumes:
+      - fala:/modelos
+
+  # ------------------------------------------------------------------ imagens (Stable Diffusion)
+  comfyui:
+    <<: *padrao
+    build:
+      context: ./servicos/comfyui
+      args:
+        IMAGEM_BASE: assistente/base:${TORCH_INDICE:-cpu}
+    image: assistente/comfyui:local
+    profiles: ["imagens"]
+    environment:
+      SD_MODELO: ${SD_MODELO:-sd15}
+      COMFYUI_ARGS: ${COMFYUI_ARGS:---cpu}
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+    volumes:
+      - comfyui-modelos:/comfyui/models
+      - comfyui-saida:/comfyui/output
+    ports:
+      - "127.0.0.1:${PORTA_COMFYUI:-8188}:8188"
+
+  # ------------------------------------------------------------------ busca na web
+  searxng:
+    <<: *padrao
+    image: searxng/searxng:2026.9.30-a9d990033
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET}
+      SEARXNG_BASE_URL: http://searxng:8080/
+      GRANIAN_HOST: 0.0.0.0              # só IPv4: funciona mesmo com IPv6 desligado no Docker
+    volumes:
+      - ./config/searxng:/etc/searxng
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+
+  # ------------------------------------------------------------------ ferramentas (documentos, imagens, busca)
+  ferramentas:
+    <<: *padrao
+    build: ./servicos/ferramentas
+    image: assistente/ferramentas:local
+    environment:
+      FERRAMENTAS_TOKEN: ${FERRAMENTAS_TOKEN}
+      SEARXNG_URL: http://searxng:8080
+      COMFYUI_URL: http://comfyui:8188
+      OLLAMA_URL: http://ollama:11434
+      LLM_BACKEND: ${LLM_BACKEND:-ollama}
+      SD_MODELO: ${SD_MODELO:-sd15}
+      IMAGEM_PASSOS: ${IMAGEM_PASSOS:-25}
+      LIBERAR_VRAM_PARA_IMAGEM: ${LIBERAR_VRAM_PARA_IMAGEM:-0}
+      ARQUIVOS_URL_PUBLICA: http://${HOST_IP:-localhost}:${PORTA_ARQUIVOS:-3002}
+      FUSO_HORARIO: ${FUSO_HORARIO:-America/Sao_Paulo}
+    volumes:
+      - arquivos:/dados/arquivos
+    ports:
+      - "${PORTA_ARQUIVOS:-3002}:8000"
+
+  # ------------------------------------------------------------------ interface principal
+  open-webui:
+    <<: *padrao
+    image: ghcr.io/open-webui/open-webui:v0.11.4
+    depends_on:
+      ollama: { condition: service_started }
+      fala: { condition: service_started }
+      ferramentas: { condition: service_started }
+      searxng: { condition: service_started }
+    ports:
+      - "${PORTA_WEBUI:-3000}:8080"
+    volumes:
+      - open-webui:/app/backend/data
+    environment:
+      WEBUI_NAME: Assistente
+      WEBUI_URL: http://${HOST_IP:-localhost}:${PORTA_WEBUI:-3000}
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
+      WEBUI_ADMIN_EMAIL: ${ADMIN_EMAIL}
+      WEBUI_ADMIN_PASSWORD: ${ADMIN_SENHA}
+      WEBUI_ADMIN_NAME: Administrador
+      ENABLE_SIGNUP: "false"
+      DEFAULT_USER_ROLE: user
+      DEFAULT_LOCALE: pt-BR
+      ENABLE_API_KEYS: "true"
+      ANONYMIZED_TELEMETRY: "false"
+      DO_NOT_TRACK: "true"
+      SCARF_NO_ANALYTICS: "true"
+      # LLM: Ollama sempre; llama.cpp (OpenAI compatível) só quando o Qwen3-Omni roda nele
+      OLLAMA_BASE_URL: http://ollama:11434
+      ENABLE_OPENAI_API: ${USAR_LLAMACPP:-false}
+      OPENAI_API_BASE_URLS: http://llamacpp:8080/v1
+      OPENAI_API_KEYS: local
+      DEFAULT_MODELS: ${LLM_MODELO_ATIVO}
+      DEFAULT_MODEL_PARAMS: '{"function_calling":"native","temperature":0.6,"system":"Você é um assistente pessoal que roda localmente no computador do usuário. Responda sempre em português do Brasil, de forma clara e direta. Use as ferramentas quando precisar: pesquisa na web para fatos atuais, geração de imagens (descreva a imagem em inglês para o gerador) e criar_documento para entregar arquivos PDF, Word, TXT ou Markdown."}'
+      DEFAULT_MODEL_METADATA: '{"toolIds":["server:ferramentas"],"defaultFeatureIds":["web_search","image_generation"],"capabilities":{"vision":false,"file_upload":true,"file_context":true,"web_search":true,"image_generation":true,"code_interpreter":false,"citations":true,"status_updates":true,"memory":true,"builtin_tools":true}}'
+      ENABLE_FOLLOW_UP_GENERATION: "false"
+      ENABLE_AUTOCOMPLETE_GENERATION: "false"
+      ENABLE_TAGS_GENERATION: "false"
+      ENABLE_CODE_INTERPRETER: "false"
+      # Reconhecimento de voz (Whisper no serviço "fala")
+      AUDIO_STT_ENGINE: openai
+      AUDIO_STT_OPENAI_API_BASE_URL: http://fala:8000/v1
+      AUDIO_STT_OPENAI_API_KEY: local
+      AUDIO_STT_MODEL: ${WHISPER_MODELO:-large-v3-turbo}
+      WHISPER_LANGUAGE: pt
+      # Síntese de voz (Kokoro pt-BR, Piper de reserva)
+      AUDIO_TTS_ENGINE: openai
+      AUDIO_TTS_OPENAI_API_BASE_URL: http://fala:8000/v1
+      AUDIO_TTS_OPENAI_API_KEY: local
+      AUDIO_TTS_MODEL: kokoro
+      AUDIO_TTS_VOICE: ${TTS_VOZ:-pf_dora}
+      AUDIO_TTS_SPLIT_ON: punctuation
+      # Modo de chamada: interrupção por voz, envio automático, idioma e voz
+      DEFAULT_INTERFACE_SETTINGS: '{"voiceInterruption":true,"speechAutoSend":true,"showEmojiInCall":false,"responseAutoPlayback":false,"audio":{"stt":{"language":"pt"},"tts":{"voice":"${TTS_VOZ:-pf_dora}","playbackRate":1}}}'
+      ENABLE_VOICE_MODE_PROMPT: "true"
+      VOICE_MODE_PROMPT_TEMPLATE: >-
+        Você é um assistente de voz em português do Brasil, simpático e direto.
+        Tudo o que você escreve será lido em voz alta: responda curto e natural, em frases simples,
+        sem markdown, listas, tabelas, emojis ou links. Dê primeiro a resposta mais útil e ofereça detalhes só se pedirem.
+        Use as ferramentas quando precisar e diga em poucas palavras o que vai fazer antes de uma tarefa demorada.
+      # Busca na web (SearXNG local, sem chave de API)
+      ENABLE_WEB_SEARCH: "true"
+      WEB_SEARCH_ENGINE: searxng
+      SEARXNG_QUERY_URL: http://searxng:8080/search?q=<query>
+      SEARXNG_LANGUAGE: pt-BR
+      WEB_SEARCH_RESULT_COUNT: "5"
+      WEB_SEARCH_CONCURRENT_REQUESTS: "3"
+      # Imagens: API OpenAI do serviço "ferramentas", que chama o ComfyUI
+      ENABLE_IMAGE_GENERATION: ${IMAGENS_ATIVAS:-true}
+      IMAGE_GENERATION_ENGINE: openai
+      IMAGES_OPENAI_API_BASE_URL: http://ferramentas:8000/v1
+      IMAGES_OPENAI_API_KEY: ${FERRAMENTAS_TOKEN}
+      IMAGE_GENERATION_MODEL: ${SD_MODELO:-sd15}
+      IMAGE_SIZE: ${IMAGEM_TAMANHO:-512x512}
+      IMAGE_STEPS: ${IMAGEM_PASSOS:-25}
+      ENABLE_IMAGE_PROMPT_GENERATION: "false"
+      # Leitura de arquivos (RAG) com embeddings multilíngues
+      RAG_EMBEDDING_MODEL: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+      CHUNK_SIZE: "1200"
+      CHUNK_OVERLAP: "150"
+      PDF_EXTRACT_IMAGES: "false"
+      # Ferramentas extras (criação de documentos)
+      TOOL_SERVER_CONNECTIONS: '[{"type":"openapi","url":"http://ferramentas:8000","path":"openapi.json","auth_type":"bearer","key":"${FERRAMENTAS_TOKEN}","config":{"enable":true,"function_name_filter_list":"criar_documento"},"info":{"id":"ferramentas","name":"Documentos","description":"Cria arquivos PDF, Word, TXT e Markdown para download"}}]'
+      WEBUI_BANNERS: '[{"id":"modo-voz","type":"info","title":"Modo de voz avançado","content":"Conversa contínua com interrupção e fila de pedidos: http://${HOST_IP:-localhost}:${PORTA_VOZ:-3001}","dismissible":true,"timestamp":1759276800}]'
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+
+  # ------------------------------------------------------------------ modo de voz avançado
+  voz:
+    <<: *padrao
+    build: ./servicos/voz
+    image: assistente/voz:local
+    depends_on:
+      fala: { condition: service_started }
+      ferramentas: { condition: service_started }
+    environment:
+      LLM_URL: ${LLM_URL_VOZ:-http://ollama:11434/v1}
+      LLM_MODELO: ${LLM_MODELO_ATIVO}
+      LLM_RESERVA_URL: http://ollama:11434/v1
+      LLM_RESERVA_MODELO: ${LLM_RESERVA}
+      FALA_URL: http://fala:8000/v1
+      FERRAMENTAS_URL: http://ferramentas:8000
+      FERRAMENTAS_TOKEN: ${FERRAMENTAS_TOKEN}
+      ARQUIVOS_URL_PUBLICA: http://${HOST_IP:-localhost}:${PORTA_ARQUIVOS:-3002}
+      TTS_VOZ: ${TTS_VOZ:-pf_dora}
+      WEBUI_URL_PUBLICA: http://${HOST_IP:-localhost}:${PORTA_WEBUI:-3000}
+      FUSO_HORARIO: ${FUSO_HORARIO:-America/Sao_Paulo}
+    volumes:
+      - conversas:/dados/conversas
+    ports:
+      - "${PORTA_VOZ:-3001}:8000"
+
+  # ------------------------------------------------------------------ HTTPS na rede local (microfone no celular)
+  https:
+    <<: *padrao
+    image: caddy:2.11.4-alpine
+    depends_on: [open-webui, voz]
+    environment:
+      HOST_IP: ${HOST_IP:-127.0.0.1}
+    volumes:
+      - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy:/data
+    ports:
+      - "${PORTA_HTTPS_WEBUI:-3443}:3443"
+      - "${PORTA_HTTPS_VOZ:-3444}:3444"
+
+  # ------------------------------------------------------------------ só para construir a base PyTorch
+  base:
+    build:
+      context: ./servicos/base
+      args:
+        TORCH_INDICE: ${TORCH_INDICE:-cpu}
+    image: assistente/base:${TORCH_INDICE:-cpu}
+    profiles: ["construir"]
+
+volumes:
+  ollama:
+  llamacpp:
+  fala:
+  comfyui-modelos:
+  comfyui-saida:
+  arquivos:
+  conversas:
+  open-webui:
+  caddy:

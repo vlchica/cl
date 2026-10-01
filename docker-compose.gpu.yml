@@ -1,0 +1,34 @@
+# Acrescenta GPU NVIDIA aos serviços. Carregado automaticamente pelo .env quando há GPU.
+# GPUS_LLM / GPUS_AUX são índices do nvidia-smi escolhidos pelo detector de hardware
+# (numa máquina com várias placas, o LLM fica nas maiores e voz/imagens numa separada).
+
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+services:
+  ollama:
+    <<: *gpu
+    environment:
+      CUDA_VISIBLE_DEVICES: ${GPUS_LLM}
+
+  llamacpp:
+    <<: *gpu
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda-b11277
+    environment:
+      CUDA_VISIBLE_DEVICES: ${GPUS_LLM}
+
+  fala:
+    <<: *gpu
+    environment:
+      CUDA_VISIBLE_DEVICES: ${GPUS_AUX}
+
+  comfyui:
+    <<: *gpu
+    environment:
+      CUDA_VISIBLE_DEVICES: ${GPUS_AUX}

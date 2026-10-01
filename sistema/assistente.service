@@ -1,0 +1,20 @@
+# Modelo do serviço systemd. O instalador troca {RAIZ}, {PYTHON} e {DOCKER} e grava
+# em /etc/systemd/system/assistente.service.
+[Unit]
+Description=Assistente de voz local (Open WebUI, Ollama, Whisper, Kokoro, ComfyUI)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory={RAIZ}
+# Atualiza o IP da rede local no .env (links e HTTPS) antes de subir
+ExecStartPre=-{PYTHON} {RAIZ}/scripts/atualizar_ip.py
+ExecStart={DOCKER} compose up -d --remove-orphans
+ExecStop={DOCKER} compose stop
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target

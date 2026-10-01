@@ -1,0 +1,17 @@
+# HTTPS na rede local, com certificado próprio do Caddy.
+# O navegador só libera o microfone em https:// (ou em localhost), então é por
+# aqui que se usa o modo de voz a partir do celular ou de outro computador.
+{
+	auto_https disable_redirects
+	skip_install_trust
+}
+
+https://{$HOST_IP}:3443, https://localhost:3443 {
+	tls internal
+	reverse_proxy open-webui:8080
+}
+
+https://{$HOST_IP}:3444, https://localhost:3444 {
+	tls internal
+	reverse_proxy voz:8000
+}

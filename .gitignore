@@ -1,0 +1,14 @@
+# Gerados na máquina do usuário
+.env
+estado/
+logs/
+relatorio-hardware.md
+relatorio-teste.md
+relatorio-instalacao.md
+# Baixados no build da imagem do modo de voz
+servicos/voz/static/vad/
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
