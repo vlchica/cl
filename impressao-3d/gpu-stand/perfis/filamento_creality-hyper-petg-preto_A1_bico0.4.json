@@ -1,0 +1,64 @@
+{
+    "type": "filament",
+    "name": "Creality Hyper PETG Preto @A1 0.4",
+    "inherits": "Generic PETG HF @BBL A1",
+    "from": "User",
+    "instantiation": "true",
+    "filament_vendor": [
+        "Creality"
+    ],
+    "filament_colour": [
+        "#000000"
+    ],
+    "filament_density": [
+        "1.27"
+    ],
+    "nozzle_temperature": [
+        "245"
+    ],
+    "nozzle_temperature_initial_layer": [
+        "245"
+    ],
+    "nozzle_temperature_range_low": [
+        "220"
+    ],
+    "nozzle_temperature_range_high": [
+        "270"
+    ],
+    "textured_plate_temp": [
+        "70"
+    ],
+    "textured_plate_temp_initial_layer": [
+        "70"
+    ],
+    "hot_plate_temp": [
+        "70"
+    ],
+    "hot_plate_temp_initial_layer": [
+        "70"
+    ],
+    "filament_max_volumetric_speed": [
+        "18"
+    ],
+    "fan_min_speed": [
+        "20"
+    ],
+    "fan_max_speed": [
+        "40"
+    ],
+    "fan_cooling_layer_time": [
+        "15"
+    ],
+    "slow_down_layer_time": [
+        "8"
+    ],
+    "overhang_fan_speed": [
+        "90"
+    ],
+    "close_fan_the_first_x_layers": [
+        "3"
+    ],
+    "compatible_printers": [
+        "Bambu Lab A1 0.4 nozzle"
+    ]
+}
